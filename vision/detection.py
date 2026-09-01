@@ -147,6 +147,31 @@ def draw_component(image, contour, info):
 
     return result
 
+def detect_component(image):
+    """
+    Detect the main component in an image.
+
+    Returns:
+        dict containing contour, bounding box information,
+        and initial measurement points.
+    """
+
+    edges = detect_edges(image)
+
+    largest_contour, filtered_contours = find_component_contour(
+        edges
+    )
+
+    info = get_component_info(
+        largest_contour
+    )
+
+    return {
+        "contour": largest_contour,
+        "info": info,
+        "points": info["points"],
+        "edges": edges
+    }
 
 def main():
 
@@ -154,17 +179,10 @@ def main():
     image = load_image(IMAGE_PATH)
 
     # 2. Detect edges
-    edges = detect_edges(image)
+    result = detect_component(image)
 
-    # 3. Find component
-    largest_contour, contours = find_component_contour(
-        edges
-    )
-
-    # 4. Get component information
-    info = get_component_info(
-        largest_contour
-    )
+    info = result["info"]
+    contour = result["contour"]
 
     print("\nComponent information:")
     print(f"Area: {info['area']:.2f} pixels²")
@@ -178,9 +196,9 @@ def main():
         print(f"{name}: {point}")
 
     # 5. Draw result
-    result = draw_component(
+    display = draw_component(
         image,
-        largest_contour,
+        contour,
         info
     )
 
@@ -192,12 +210,12 @@ def main():
 
     cv2.imshow(
         "Edges",
-        edges
+        result["edges"]
     )
 
     cv2.imshow(
         "Component Detection",
-        result
+        display
     )
 
     cv2.waitKey(0)
