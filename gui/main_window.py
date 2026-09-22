@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QSpacerItem,
 )
 from PySide6.QtCore import Qt
+from matplotlib import image
 from vision.detection import detect_component, draw_component
 from vision.measurement import calculate_width, calculate_height
 from calibration.calibration import calculate_scale, pixels_to_real
@@ -423,39 +424,40 @@ class MainWindow(QMainWindow):
         self.calibrate_button.clicked.connect(self.on_calibrate)
         self.measure_button.clicked.connect(self.on_measure)
 
-    def on_load_image(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open Image",
-            "",
-            "Image Files (*.png *.jpg *.jpeg *.bmp)"
-        )
 
-        if not file_path:
-            return
+    def _display_image(self, image):
 
-        image = cv2.imread(file_path)
+        # Handle images with an alpha channel
+        if image.shape[2] == 4:
+            rgb_image = cv2.cvtColor(
+                image,
+                cv2.COLOR_BGRA2RGBA
+            )
 
-        if image is None:
-            self._set_status("Could not load image", CHIP_IDLE)
-            return
+            height, width, channels = rgb_image.shape
 
-        self.image = image
-        self.image_loaded = True
+            q_image = QImage(
+                rgb_image.data,
+                width,
+                height,
+                channels * width,
+                QImage.Format_RGBA8888
+            ).copy()
+        else:
+            rgb_image = cv2.cvtColor(
+                image,
+                cv2.COLOR_BGR2RGB
+            )
 
-        # Convert OpenCV BGR image to RGB for Qt
-        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            height, width, channels = rgb_image.shape
 
-        height, width, channels = rgb_image.shape
-        bytes_per_line = channels * width
-
-        q_image = QImage(
+            q_image = QImage(
             rgb_image.data,
             width,
             height,
-            bytes_per_line,
+            channels * width,
             QImage.Format_RGB888
-        )
+            ).copy()
 
         pixmap = QPixmap.fromImage(q_image)
 
@@ -467,9 +469,83 @@ class MainWindow(QMainWindow):
             )
         )
 
-        self._style_chip(self.image_chip, CHIP_SUCCESS)
-        self.image_chip.setText("  Image: Loaded  ")
-        self._set_status("Image loaded", CHIP_SUCCESS)
+    def on_load_image(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Image",
+            "",
+            "Image Files (*.png *.jpg *.jpeg *.bmp)"
+        )
+
+        if not file_path:
+            return
+
+        image = cv2.imread(
+            file_path,
+            cv2.IMREAD_UNCHANGED
+        )
+
+        if image is None:
+            self._set_status(
+                "Could not load image",
+                CHIP_IDLE
+            )
+            return
+
+        # If image has 4 channels, keep it.
+        # Otherwise it is a normal BGR image.
+        self.image = image
+
+        self.image_loaded = True
+        self.border_detected = False
+        self.corners_selected = 0
+        self.point_coords = []
+        self.detection_result = None
+        self.calibrated = False
+        self.pixels_per_mm = None
+
+        self._display_image(self.image)
+
+        self._style_chip(
+            self.image_chip,
+            CHIP_SUCCESS
+        )
+
+        self.image_chip.setText(
+            "  Image: Loaded  "
+        )
+
+        self._style_chip(
+            self.border_chip,
+            CHIP_IDLE
+        )
+
+        self.border_chip.setText(
+            "  Border: Not Detected  "
+        )
+
+        self._style_chip(
+            self.points_chip,
+            CHIP_IDLE
+        )
+
+        self.points_chip.setText(
+            "  Points: 0 / 4  "
+        )
+
+        self.points_list_label.setText(
+            "No points selected yet"
+        )
+
+        self.result_label.setText(
+            "-- mm"
+        )
+
+        self._set_status(
+            "Image loaded",
+            CHIP_SUCCESS
+        )
+
         self._refresh_button_states()
 
     def on_clear(self):
@@ -497,46 +573,262 @@ class MainWindow(QMainWindow):
         self._refresh_button_states()
 
     def on_detect_border(self):
-        # TODO: call vision/detection.py and draw the contour over the
-        # image currently shown in self.image_label.
-        self.border_detected = True
-        self._style_chip(self.border_chip, CHIP_SUCCESS)
-        self.border_chip.setText("  Border: Detected  ")
-        self._set_status("Border detected", CHIP_SUCCESS)
-        self._refresh_button_states()
-
+        if self.image is None:
+            self._set_status(
+                "No image loaded",
+                CHIP_IDLE
+            )
+            return
+    
+        try:
+            # Run actual detection
+            result = detect_component(self.image)
+    
+            self.detection_result = result
+    
+            contour = result["contour"]
+            info = result["info"]
+    
+            # Store the actual detected points
+            self.point_coords = [
+                info["points"]["top_left"],
+                info["points"]["top_right"],
+                info["points"]["bottom_left"],
+                info["points"]["bottom_right"]
+            ]
+    
+            self.corners_selected = 4
+            self.border_detected = True
+    
+            # Draw detection result
+            output = draw_component(
+                self.image,
+                contour,
+                info
+            )
+    
+            # Display the annotated image
+            self._display_image(output)
+    
+            # Update GUI
+            self.points_chip.setText(
+                "  Points: 4 / 4  "
+            )
+    
+            self._style_chip(
+                self.points_chip,
+                CHIP_SUCCESS
+            )
+    
+            self.border_chip.setText(
+                "  Border: Detected  "
+            )
+    
+            self._style_chip(
+                self.border_chip,
+                CHIP_SUCCESS
+            )
+    
+            self.points_list_label.setText(
+                f"Top Left: {info['points']['top_left']}\n"
+                f"Top Right: {info['points']['top_right']}\n"
+                f"Bottom Left: {info['points']['bottom_left']}\n"
+                f"Bottom Right: {info['points']['bottom_right']}"
+            )
+    
+            self._set_status(
+                f"Object detected: "
+                f"{info['width']} × {info['height']} px",
+                CHIP_SUCCESS
+            )
+    
+            self._refresh_button_states()
+    
+        except ValueError as error:
+    
+            self.border_detected = False
+            self.detection_result = None
+    
+            self._style_chip(
+                self.border_chip,
+                CHIP_IDLE
+            )
+    
+            self.border_chip.setText(
+                "  Border: Not Detected  "
+            )
+    
+            self._set_status(
+                str(error),
+                CHIP_IDLE
+            )
+    
+            self._refresh_button_states()
+    
     def on_select_points(self):
-        # TODO: replace with real click-to-select points on the canvas
-        # (e.g. via a custom mousePressEvent on the image widget).
-        if self.corners_selected < 4:
-            self.corners_selected += 1
-            self.point_coords.append((self.corners_selected * 40, self.corners_selected * 30))
 
-        self.points_chip.setText(f"  Points: {self.corners_selected} / 4  ")
+        if self.detection_result is None:
+            self._set_status(
+                "Detect the object first",
+                CHIP_IDLE
+            )
+            return
+
+        points = self.detection_result["points"]
+
+        self.point_coords = [
+            points["top_left"],
+            points["top_right"],
+            points["bottom_left"],
+            points["bottom_right"]
+        ]
+
+        self.corners_selected = 4
+
+        self.points_chip.setText(
+            "  Points: 4 / 4  "
+        )
+
         self._style_chip(
             self.points_chip,
-            CHIP_SUCCESS if self.corners_selected >= 2 else CHIP_IDLE,
+            CHIP_SUCCESS
         )
-        lines = [f"P{i+1}: {pt}" for i, pt in enumerate(self.point_coords)]
-        self.points_list_label.setText("\n".join(lines) if lines else "No points selected yet")
 
-        self._set_status(f"{self.corners_selected} point(s) selected", CHIP_IDLE)
+        lines = [
+            f"Top Left: {points['top_left']}",
+            f"Top Right: {points['top_right']}",
+            f"Bottom Left: {points['bottom_left']}",
+            f"Bottom Right: {points['bottom_right']}"
+        ]
+
+        self.points_list_label.setText(
+            "\n".join(lines)
+        )
+
+        self._set_status(
+            "Measurement points selected",
+            CHIP_SUCCESS
+        )
+
         self._refresh_button_states()
 
     def on_calibrate(self):
-        # TODO: call calibration/calibration.py using the value typed
-        # into self.reference_input.
-        self.calibrated = True
-        self._style_chip(self.calibration_chip, CHIP_SUCCESS)
-        self.calibration_chip.setText("  Calibrated  ")
-        self._set_status("Calibration complete", CHIP_SUCCESS)
-        self._refresh_button_states()
+        if self.detection_result is None:
+            self._set_status(
+                "Detect the object first",
+                CHIP_IDLE
+            )
+            return
+
+        try:
+            known_length = float(
+                self.reference_input.text()
+            )
+
+            if known_length <= 0:
+                raise ValueError(
+                    "Known length must be greater than zero."
+                )
+
+            points = self.detection_result["points"]
+
+        # Use the detected width as the calibration
+        # pixel distance.
+            pixel_distance = calculate_width(points)
+
+            self.pixels_per_mm = calculate_scale(
+                pixel_distance,
+                known_length
+            )
+
+            self.calibrated = True
+
+            self._style_chip(
+                self.calibration_chip,
+                CHIP_SUCCESS
+            )
+
+            self.calibration_chip.setText(
+                f"  Calibrated: "
+                f"{self.pixels_per_mm:.2f} px/mm  "
+            )
+
+            self._set_status(
+                f"Calibration complete: "
+                f"{self.pixels_per_mm:.2f} px/mm",
+                CHIP_SUCCESS
+            )
+
+            self._refresh_button_states()
+
+        except ValueError as error:
+
+           self.calibrated = False
+
+           self._style_chip(
+                self.calibration_chip,
+                CHIP_IDLE
+            )
+
+           self.calibration_chip.setText(
+                "  Not Calibrated  "
+            )
+
+           self._set_status(
+                str(error),
+                CHIP_IDLE
+            )
+
+           self._refresh_button_states()
 
     def on_measure(self):
-        # TODO: call vision/measurement.py using the selected points and
-        # the calibration factor, then display the real result.
-        self.result_label.setText("25.40 mm")
-        self._set_status("Measurement complete", CHIP_SUCCESS)
+
+        if not self.calibrated:
+            self._set_status(
+                "Calibrate first",
+                CHIP_IDLE
+            )
+            return
+
+        if self.detection_result is None:
+            self._set_status(
+                "Detect the object first",
+                CHIP_IDLE
+            )
+            return
+
+        try:
+            points = self.detection_result["points"]
+
+            pixel_width = calculate_width(points)
+            pixel_height = calculate_height(points)
+
+            width_mm = pixels_to_real(
+                pixel_width,
+                self.pixels_per_mm
+            )
+
+            height_mm = pixels_to_real(
+                pixel_height,
+                self.pixels_per_mm
+            )
+
+            self.result_label.setText(
+                f"{width_mm:.2f} × {height_mm:.2f} mm"
+            )
+
+            self._set_status(
+                f"Measurement complete: "
+                f"{width_mm:.2f} × {height_mm:.2f} mm",
+                CHIP_SUCCESS
+            )
+
+        except ValueError as error:
+
+            self._set_status(
+                str(error),
+                CHIP_IDLE
+            )
 
     def _set_status(self, message, palette):
         self.statusBar().showMessage(message)
