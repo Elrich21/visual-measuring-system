@@ -1,4 +1,7 @@
 import sys
+import cv2
+
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -6,6 +9,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QFileDialog,
     QVBoxLayout,
     QHBoxLayout,
     QGroupBox,
@@ -14,6 +18,9 @@ from PySide6.QtWidgets import (
     QSpacerItem,
 )
 from PySide6.QtCore import Qt
+from vision.detection import detect_component, draw_component
+from vision.measurement import calculate_width, calculate_height
+from calibration.calibration import calculate_scale, pixels_to_real
 
 
 # ----------------------------------------------------------------------
@@ -57,6 +64,12 @@ class MainWindow(QMainWindow):
         self.corners_selected = 0
         self.point_coords = []          # placeholder coordinates
         self.calibrated = False
+        
+
+        self.image = None
+        self.detection_result = None
+        self.pixels_per_mm = None
+
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -411,9 +424,49 @@ class MainWindow(QMainWindow):
         self.measure_button.clicked.connect(self.on_measure)
 
     def on_load_image(self):
-        # TODO: open a file dialog, load the image with OpenCV / Pillow,
-        # and display it as a QPixmap on self.image_label.
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Image",
+            "",
+            "Image Files (*.png *.jpg *.jpeg *.bmp)"
+        )
+
+        if not file_path:
+            return
+
+        image = cv2.imread(file_path)
+
+        if image is None:
+            self._set_status("Could not load image", CHIP_IDLE)
+            return
+
+        self.image = image
         self.image_loaded = True
+
+        # Convert OpenCV BGR image to RGB for Qt
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        height, width, channels = rgb_image.shape
+        bytes_per_line = channels * width
+
+        q_image = QImage(
+            rgb_image.data,
+            width,
+            height,
+            bytes_per_line,
+            QImage.Format_RGB888
+        )
+
+        pixmap = QPixmap.fromImage(q_image)
+
+        self.image_label.setPixmap(
+            pixmap.scaled(
+                self.image_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+        )
+
         self._style_chip(self.image_chip, CHIP_SUCCESS)
         self.image_chip.setText("  Image: Loaded  ")
         self._set_status("Image loaded", CHIP_SUCCESS)
