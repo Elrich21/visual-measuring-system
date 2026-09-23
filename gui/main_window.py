@@ -65,7 +65,7 @@ class ImageCanvas(QLabel):
     # class constants so the drawing code and the "does this click land
     # near a point" logic (if ever needed) stay in sync.
     DOT_RADIUS = 5
-    LABEL_GAP = 8       # space between the dot's edge and the label box
+    LABEL_GAP = 8        # space between the dot's edge and the label box
     LABEL_H_PAD = 6      # horizontal padding inside the label box
     LABEL_V_PAD = 4      # vertical padding inside the label box
 
@@ -199,9 +199,8 @@ class ImageCanvas(QLabel):
 
         # Use the ACTUAL pixmap's own dimensions as the boundary for label
         # clamping (not the recomputed geometry, which can differ from the
-        # real pixmap by rounding). This is what fixes labels being cut off:
-        # every label's bounding box is now forced to stay within
-        # [0, canvas_w] x [0, canvas_h].
+        # real pixmap by rounding). This keeps every label's bounding box
+        # inside [0, canvas_w] x [0, canvas_h].
         canvas_w, canvas_h = painted.width(), painted.height()
 
         painter = QPainter(painted)
@@ -230,18 +229,14 @@ class ImageCanvas(QLabel):
             box_h = text_rect.height() + self.LABEL_V_PAD * 2
 
             # Prefer the point's right side; flip to the left if placing it
-            # on the right would spill past the right edge of the canvas
-            # (this is exactly what was happening with Top-Right/Bottom-Right).
+            # on the right would spill past the right edge of the canvas.
             offset = self.DOT_RADIUS + self.LABEL_GAP
             if x + offset + box_w <= canvas_w:
                 box_x = x + offset
             else:
                 box_x = x - offset - box_w
-            # Safety clamp in case the canvas itself is narrower than the box.
             box_x = max(0.0, min(box_x, canvas_w - box_w))
 
-            # Vertically center the label on the point, then clamp so it
-            # never spills past the top or bottom edge either.
             box_y = y - box_h / 2
             box_y = max(0.0, min(box_y, canvas_h - box_h))
 
@@ -651,6 +646,26 @@ class MainWindow(QMainWindow):
         coordinate conversion are handled inside ImageCanvas itself."""
         self.image_label.set_image(image)
 
+    # ------------------------------------------------------------------
+    # NEW: converts the manually clicked points into the dict shape that
+    # vision/measurement.py expects. Returns None if the user hasn't
+    # finished selecting all 4 points yet.
+    # ------------------------------------------------------------------
+    def _get_selected_points_dict(self):
+        """Convert self.point_coords (a list of 4 (x, y) tuples, collected
+        in Top-Left -> Top-Right -> Bottom-Left -> Bottom-Right click
+        order) into the dict shape calculate_width()/calculate_height()
+        expect. Returns None if exactly 4 points haven't been selected."""
+        if len(self.point_coords) != 4:
+            return None
+
+        return {
+            "top_left": self.point_coords[0],
+            "top_right": self.point_coords[1],
+            "bottom_left": self.point_coords[2],
+            "bottom_right": self.point_coords[3],
+        }
+
     def on_load_image(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -715,6 +730,15 @@ class MainWindow(QMainWindow):
 
         self.points_list_label.setText(
             "No points selected yet"
+        )
+
+        self._style_chip(
+            self.calibration_chip,
+            CHIP_IDLE
+        )
+
+        self.calibration_chip.setText(
+            "  Not Calibrated  "
         )
 
         self.result_label.setText(
@@ -845,6 +869,17 @@ class MainWindow(QMainWindow):
         # this doubles as the "reset/reselect" control.
         self.point_coords = []
         self.corners_selected = 0
+
+        # Re-selecting points invalidates any existing calibration, since
+        # calibration is now computed from the specific points that were
+        # selected. Without this, a stale scale (from the previous set of
+        # points) could silently be used to measure against new points.
+        self.calibrated = False
+        self.pixels_per_mm = None
+        self._style_chip(self.calibration_chip, CHIP_IDLE)
+        self.calibration_chip.setText("  Not Calibrated  ")
+        self.result_label.setText("-- mm")
+
         self.image_label.start_point_selection()
 
         self.points_chip.setText("  Points: 0 / 4  ")
@@ -884,9 +919,13 @@ class MainWindow(QMainWindow):
         self._refresh_button_states()
 
     def on_calibrate(self):
-        if self.detection_result is None:
+        # CHANGED: calibration now reads the four MANUALLY selected
+        # points instead of self.detection_result["points"].
+        points = self._get_selected_points_dict()
+
+        if points is None:
             self._set_status(
-                "Detect the object first",
+                "Select all 4 points before calibrating",
                 CHIP_IDLE
             )
             return
@@ -901,9 +940,8 @@ class MainWindow(QMainWindow):
                     "Known length must be greater than zero."
                 )
 
-            points = self.detection_result["points"]
-
-            # Use the detected width as the calibration
+            # Use the distance between the manually selected
+            # top-left and top-right points as the calibration
             # pixel distance.
             pixel_distance = calculate_width(points)
 
@@ -961,16 +999,18 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if self.detection_result is None:
+        # CHANGED: measurement now reads the four MANUALLY selected
+        # points instead of self.detection_result["points"].
+        points = self._get_selected_points_dict()
+
+        if points is None:
             self._set_status(
-                "Detect the object first",
+                "Select all 4 points before measuring",
                 CHIP_IDLE
             )
             return
 
         try:
-            points = self.detection_result["points"]
-
             pixel_width = calculate_width(points)
             pixel_height = calculate_height(points)
 
@@ -1010,14 +1050,12 @@ class MainWindow(QMainWindow):
         """Enable/disable toolbar buttons so the workflow order is obvious."""
         self.detect_button.setEnabled(self.image_loaded)
         self.select_points_button.setEnabled(self.image_loaded)   # Detect Border is optional
-        # Calibrate needs BOTH 4 manually selected points AND a completed
-        # detection (on_calibrate() reads self.detection_result). Only
-        # checking corners_selected let the button light up while clicking
-        # it would still fail with "Detect the object first" — a
-        # misleading enabled state. Requiring both keeps the button honest.
-        self.calibrate_button.setEnabled(
-            self.corners_selected == 4 and self.detection_result is not None
-        )
+        # CHANGED: Calibrate now only needs 4 manually selected points.
+        # Calibration and measurement read from self.point_coords, not
+        # self.detection_result, so completing Detect Border is no longer
+        # a prerequisite for calibrating — matching the "Detect Border
+        # (optional)" step in the intended workflow.
+        self.calibrate_button.setEnabled(self.corners_selected == 4)
         self.measure_button.setEnabled(self.calibrated)
 
 
