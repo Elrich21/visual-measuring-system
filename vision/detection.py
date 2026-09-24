@@ -14,6 +14,16 @@ def create_object_mask(image):
     """
 
     # ---------------------------------------------------------
+    # 0. Genuine single-channel (grayscale) input
+    # ---------------------------------------------------------
+    # A 2-D array has no channel axis at all, so image.shape[2] below
+    # would raise IndexError. Promote it to 3-channel BGR first so the
+    # rest of the function (and draw_component(), which also expects
+    # at least 3 channels) can treat every image the same way.
+    if image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
+    # ---------------------------------------------------------
     # 1. Transparent PNG
     # ---------------------------------------------------------
     if image.shape[2] == 4:
@@ -214,6 +224,12 @@ def draw_component(image, contour, info):
     """
     Draw the detected component and its measurement points.
     """
+
+    # Same grayscale guard as create_object_mask(): a true 2-D image
+    # has no channel axis, so image[:, :, :3] below would raise
+    # IndexError. Promote to 3-channel BGR first.
+    if image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
 
     output = image[:, :, :3].copy()
 

@@ -720,6 +720,15 @@ class MainWindow(QMainWindow):
         )
 
         self._style_chip(
+            self.calibration_chip,
+            CHIP_IDLE
+        )
+
+        self.calibration_chip.setText(
+            "  Not Calibrated  "
+        )
+
+        self._style_chip(
             self.points_chip,
             CHIP_IDLE
         )
@@ -730,15 +739,6 @@ class MainWindow(QMainWindow):
 
         self.points_list_label.setText(
             "No points selected yet"
-        )
-
-        self._style_chip(
-            self.calibration_chip,
-            CHIP_IDLE
-        )
-
-        self.calibration_chip.setText(
-            "  Not Calibrated  "
         )
 
         self.result_label.setText(
@@ -870,14 +870,13 @@ class MainWindow(QMainWindow):
         self.point_coords = []
         self.corners_selected = 0
 
-        # Re-selecting points invalidates any existing calibration, since
-        # calibration is now computed from the specific points that were
-        # selected. Without this, a stale scale (from the previous set of
-        # points) could silently be used to measure against new points.
+        # A new set of points invalidates any existing calibration —
+        # the old pixels-per-mm scale was computed from the previous
+        # points and no longer applies.
         self.calibrated = False
         self.pixels_per_mm = None
-        self._style_chip(self.calibration_chip, CHIP_IDLE)
         self.calibration_chip.setText("  Not Calibrated  ")
+        self._style_chip(self.calibration_chip, CHIP_IDLE)
         self.result_label.setText("-- mm")
 
         self.image_label.start_point_selection()
@@ -944,6 +943,12 @@ class MainWindow(QMainWindow):
             # top-left and top-right points as the calibration
             # pixel distance.
             pixel_distance = calculate_width(points)
+
+            if pixel_distance <= 0:
+                raise ValueError(
+                    "Top-Left and Top-Right points are the same spot — "
+                    "re-select 4 distinct points before calibrating."
+                )
 
             self.pixels_per_mm = calculate_scale(
                 pixel_distance,
